@@ -855,6 +855,12 @@ void RenderForwardClustered::_fill_instance_data(RenderListType p_render_list, i
 		}
 
 		instance_data.flags = inst->flags_cache;
+		if (p_render_list == RENDER_LIST_ALPHA) {
+			// The GI buffers are resolved from the opaque depth pre-pass, so they only describe the opaque surface
+			// behind each pixel. Surfaces drawn in the transparent pass must not sample them, otherwise they pick up
+			// the VoxelGI/SDFGI lighting of whatever lies behind them. Such surfaces rely on the forward GI paths instead.
+			instance_data.flags &= ~INSTANCE_DATA_FLAG_USE_GI_BUFFERS;
+		}
 		instance_data.gi_offset = inst->gi_offset_cache;
 		instance_data.layer_mask = inst->layer_mask;
 		instance_data.instance_uniforms_ofs = uint32_t(inst->shader_uniforms_offset);
