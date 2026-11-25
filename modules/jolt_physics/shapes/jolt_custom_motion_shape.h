@@ -110,5 +110,6 @@ public:
 
 	const JPH::ConvexShape &get_inner_shape() const { return inner_shape; }
 
+	// Like the rest of the shape's geometry, the motion is in unscaled local space, so it gets scaled together with the inner shape.
 	void set_motion(JPH::Vec3Arg p_motion) { motion = p_motion; }
 };

@@ -74,5 +74,5 @@ void JoltCustomMotionShape::GetSupportingFace(const JPH::SubShapeID &p_sub_shape
 }
 
 const JPH::ConvexShape::Support *JoltCustomMotionShape::GetSupportFunction(JPH::ConvexShape::ESupportMode p_mode, JPH::ConvexShape::SupportBuffer &p_buffer, JPH::Vec3Arg p_scale) const {
-	return new (&p_buffer) JoltMotionConvexSupport(motion, inner_shape.GetSupportFunction(p_mode, inner_support_buffer, p_scale));
+	return new (&p_buffer) JoltMotionConvexSupport(motion * p_scale, inner_shape.GetSupportFunction(p_mode, inner_support_buffer, p_scale));
 }

@@ -70,7 +70,8 @@ bool JoltPhysicsDirectSpaceState3D::_cast_motion_impl(const JPH::Shape &p_jolt_s
 	const JPH::RMat44 transform_com = to_jolt_r(p_transform_com);
 	const JPH::Vec3 scale = to_jolt(p_scale);
 	const JPH::Vec3 motion = to_jolt(p_motion);
-	const JPH::Vec3 motion_local = transform_com.Multiply3x3Transposed(motion);
+	// The motion shape scales its motion along with the inner shape, so the motion has to be in the unscaled local space of the shape.
+	const JPH::Vec3 motion_local = transform_com.Multiply3x3Transposed(motion) / scale;
 
 	JPH::AABox aabb = p_jolt_shape.GetWorldSpaceBounds(transform_com, scale);
 	JPH::AABox aabb_translated = aabb;
