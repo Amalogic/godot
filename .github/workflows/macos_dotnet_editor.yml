@@ -1,0 +1,155 @@
+name: 🍎 macOS .NET Editor
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Global Settings
+env:
+  SCONS_FLAGS: >-
+    module_mono_enabled=yes
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-macos-dotnet-editor:
+    runs-on: macos-26
+    name: Editor w/ .NET (target=editor, universal)
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: macos-editor-mono
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Download pre-built ANGLE
+        shell: sh
+        id: angle-sdk
+        run: |
+          if python ./misc/scripts/install_angle.py; then
+            echo "ANGLE_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANGLE SDK installation failed, building without ANGLE support."
+            echo "ANGLE_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download pre-built AccessKit
+        shell: sh
+        id: accesskit-sdk
+        run: |
+          if python3 ./misc/scripts/install_accesskit.py; then
+            echo "ACCESSKIT_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AccessKit SDK installation failed, building without AccessKit support."
+            echo "ACCESSKIT_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Vulkan SDK
+        id: vulkan-sdk
+        run: |
+          if sh misc/scripts/install_vulkan_sdk_macos.sh; then
+            echo "VULKAN_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::macOS: Vulkan SDK installation failed, building without Vulkan support."
+            echo "VULKAN_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+        continue-on-error: true
+
+      - name: Compilation (x86_64)
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} arch=x86_64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
+          platform: macos
+          target: editor
+
+      - name: Compilation (arm64)
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} arch=arm64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
+          platform: macos
+          target: editor
+
+      # Also save when a compilation step failed, so a late arm64 failure doesn't discard the x86_64 work.
+      - name: Save Godot build cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: macos-editor-mono
+        continue-on-error: true
+
+      # The runner is Apple Silicon, so run the arm64 binary to generate the glue.
+      - name: Generate C# glue
+        run: |
+          ./bin/godot.macos.editor.arm64.mono --headless --generate-mono-glue ./modules/mono/glue
+
+      # Builds bin/GodotSharp and the NuGet packages (GodotSharp, Godot.NET.Sdk, ...) matching this engine build.
+      - name: Build .NET assemblies and NuGet packages
+        run: |
+          dotnet --info
+          ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin --godot-platform=macos --push-nupkgs-local="${{ github.workspace }}/nupkgs"
+
+      # Re-running SCons with generate_bundle=yes merges both architectures with lipo, assembles the .app
+      # (copying bin/GodotSharp into Contents/Resources) and ad-hoc signs it with the editor entitlements.
+      - name: Assemble and sign .app bundle
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} arch=arm64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }} generate_bundle=yes bundle_sign_identity=-
+          platform: macos
+          target: editor
+
+      # generate_bundle doesn't check the lipo/codesign exit codes, so verify the result explicitly.
+      - name: Verify .app bundle
+        run: |
+          APP=bin/godot_macos_editor_mono.app
+          ARCHS="$(lipo -archs "$APP/Contents/MacOS/Godot")"
+          echo "Architectures: $ARCHS"
+          for arch in x86_64 arm64; do
+            case " $ARCHS " in
+              *" $arch "*) ;;
+              *) echo "::error::Missing $arch slice in the editor binary."; exit 1 ;;
+            esac
+          done
+          test -d "$APP/Contents/Resources/GodotSharp"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          "$APP/Contents/MacOS/Godot" --headless --version
+
+      # The bundle is ad-hoc signed and not notarized: after downloading it on another Mac, run
+      # `xattr -dr com.apple.quarantine godot_macos_editor_mono.app` before opening it.
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifact
+          # ditto keeps the symlinks and code signature intact, unlike a plain artifact upload.
+          ditto -c -k --keepParent bin/godot_macos_editor_mono.app artifact/Godot_mono_macos.zip
+          ls -l artifact
+
+      - name: Upload editor artifact
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: macos-editor-mono
+          path: artifact/*
+
+      - name: Upload NuGet packages
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: macos-editor-mono-nupkgs
+          path: nupkgs/*
