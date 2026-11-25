@@ -89,9 +89,7 @@ jobs:
           platform: macos
           target: editor
 
-      # Also save when a compilation step failed, so a late arm64 failure doesn't discard the x86_64 work.
       - name: Save Godot build cache
-        if: ${{ !cancelled() }}
         uses: ./.github/actions/godot-cache-save
         with:
           cache-name: macos-editor-mono

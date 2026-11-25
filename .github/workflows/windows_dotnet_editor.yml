@@ -1,0 +1,136 @@
+name: 🏁 Windows .NET Editor
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Global Settings
+env:
+  SCONS_FLAGS: >-
+    module_mono_enabled=yes
+    debug_symbols=no
+  SCONS_CACHE_MSVC_CONFIG: true
+  PYTHONIOENCODING: utf8
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # The GUI-subsystem editor doesn't block the shell or report its exit code, so CI steps use the console wrapper.
+  GODOT_CONSOLE_BIN: ./bin/godot.windows.editor.x86_64.mono.console.exe
+
+jobs:
+  build-windows-dotnet-editor:
+    runs-on: windows-latest
+    name: Editor w/ .NET (target=editor, x86_64)
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: windows-editor-mono
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Download Direct3D 12 SDK components
+        shell: sh
+        id: d3d12-sdk
+        run: |
+          if python ./misc/scripts/install_d3d12_sdk_windows.py; then
+            echo "D3D12_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Windows: Direct3D 12 SDK installation failed, building without Direct3D 12 support."
+            echo "D3D12_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+        continue-on-error: true
+
+      - name: Download pre-built ANGLE
+        shell: sh
+        id: angle-sdk
+        run: |
+          if python ./misc/scripts/install_angle.py; then
+            echo "ANGLE_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANGLE SDK installation failed, building without ANGLE support."
+            echo "ANGLE_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download pre-built AccessKit
+        shell: sh
+        id: accesskit-sdk
+        run: |
+          if python ./misc/scripts/install_accesskit.py; then
+            echo "ACCESSKIT_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AccessKit SDK installation failed, building without AccessKit support."
+            echo "ACCESSKIT_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compilation
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
+          platform: windows
+          target: editor
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: windows-editor-mono
+        continue-on-error: true
+
+      - name: Generate C# glue
+        shell: sh
+        run: |
+          "$GODOT_CONSOLE_BIN" --headless --generate-mono-glue ./modules/mono/glue
+
+      # Builds bin/GodotSharp and the NuGet packages (GodotSharp, Godot.NET.Sdk, ...) matching this engine build.
+      - name: Build .NET assemblies and NuGet packages
+        shell: sh
+        run: |
+          dotnet --info
+          python ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin --godot-platform=windows --push-nupkgs-local="$GITHUB_WORKSPACE/nupkgs"
+
+      - name: Verify editor build
+        shell: sh
+        run: |
+          test -f ./bin/godot.windows.editor.x86_64.mono.exe
+          test -f ./bin/GodotSharp/Api/Release/GodotSharp.dll
+          test -f ./bin/GodotSharp/Api/Debug/GodotSharp.dll
+          test -f ./bin/GodotSharp/Tools/GodotTools.dll
+          "$GODOT_CONSOLE_BIN" --headless --version
+
+      # The editor needs GodotSharp/ (and the Direct3D 12 DLLs, when enabled) next to the executable,
+      # so the whole bin/ folder is shipped minus the build-only files.
+      - name: Prepare artifact
+        run: |
+          Remove-Item bin/build_deps -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item bin/obj -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+          Get-ChildItem bin
+
+      - name: Upload editor artifact
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: windows-editor-mono
+
+      - name: Upload NuGet packages
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: windows-editor-mono-nupkgs
+          path: nupkgs/*
