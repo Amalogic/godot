@@ -36,7 +36,7 @@ jobs:
       - name: Restore Godot build cache
         uses: ./.github/actions/godot-cache-restore
         with:
-          cache-name: windows-editor-mono
+          cache-name: windows-editor-mono-${{ hashFiles('version.py') }}
         continue-on-error: true
 
       - name: Setup Python and SCons
@@ -91,7 +91,7 @@ jobs:
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:
-          cache-name: windows-editor-mono
+          cache-name: windows-editor-mono-${{ hashFiles('version.py') }}
         continue-on-error: true
 
       - name: Generate C# glue

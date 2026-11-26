@@ -31,7 +31,7 @@ jobs:
       - name: Restore Godot build cache
         uses: ./.github/actions/godot-cache-restore
         with:
-          cache-name: macos-editor-mono
+          cache-name: macos-editor-mono-${{ hashFiles('version.py') }}
         continue-on-error: true
 
       - name: Setup Python and SCons
@@ -92,7 +92,7 @@ jobs:
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:
-          cache-name: macos-editor-mono
+          cache-name: macos-editor-mono-${{ hashFiles('version.py') }}
         continue-on-error: true
 
       # The runner is Apple Silicon, so run the arm64 binary to generate the glue.
