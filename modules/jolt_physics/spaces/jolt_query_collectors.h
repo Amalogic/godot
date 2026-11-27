@@ -35,7 +35,10 @@
 #include <Jolt/Jolt.h>
 
 #include <Jolt/Core/STLLocalAllocator.h>
+#include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Collision/InternalEdgeRemovingCollector.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/DecoratedShape.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 
 template <typename TBase, int TDefaultCapacity>
@@ -151,6 +154,110 @@ public:
 
 		if ((int)hits.size() == max_hits) {
 			TBase::ForceEarlyOut();
+		}
+	}
+};
+
+// Collects one hit per shape of each body, in the order they are found. Jolt reports one hit per
+// triangle of a mesh or height field, which this reduces to a single hit for the shape they belong to.
+//
+// This relies on `OnBody` and `OnBodyEnd`, so it only works with queries made through
+// `JPH::NarrowPhaseQuery`. It must not be chained to a `JPH::InternalEdgeRemovingCollector`, which
+// never picks up the early-out fraction that `OnBodyEnd` restores, and so ends the query after the
+// first body.
+template <typename TBase, int TDefaultCapacity>
+class JoltQueryCollectorAnyMultiPerShape : public TBase {
+public:
+	typedef typename TBase::ResultType Hit;
+	typedef JPH::Array<Hit, JPH::STLLocalAllocator<Hit, TDefaultCapacity>> HitArray;
+
+private:
+	typedef JPH::Array<JPH::uint64, JPH::STLLocalAllocator<JPH::uint64, TDefaultCapacity>> UserDataArray;
+
+	HitArray hits;
+	UserDataArray body_shapes_hit;
+	const JPH::Shape *body_shape = nullptr;
+	int body_shape_count = 0;
+	int max_hits = 0;
+
+public:
+	explicit JoltQueryCollectorAnyMultiPerShape(int p_max_hits = TDefaultCapacity) :
+			max_hits(p_max_hits) {
+		hits.reserve(TDefaultCapacity);
+		body_shapes_hit.reserve(TDefaultCapacity);
+	}
+
+	bool had_hit() const {
+		return hits.size() > 0;
+	}
+
+	int get_hit_count() const {
+		return hits.size();
+	}
+
+	const Hit &get_hit(int p_index) const {
+		return hits[p_index];
+	}
+
+	void reset() {
+		Reset();
+	}
+
+	virtual void Reset() override {
+		TBase::Reset();
+		hits.clear();
+		body_shapes_hit.clear();
+		body_shape = nullptr;
+		body_shape_count = 0;
+	}
+
+	virtual void OnBody(const JPH::Body &p_body) override {
+		// The query keeps this shape alive for as long as it reports hits for this body.
+		body_shape = p_body.GetShape();
+		body_shapes_hit.clear();
+
+		// A body with several shapes is a compound of them, which can itself be decorated. Anything else
+		// is a single shape.
+		const JPH::Shape *shape = body_shape;
+
+		while (shape->GetType() == JPH::EShapeType::Decorated) {
+			shape = static_cast<const JPH::DecoratedShape *>(shape)->GetInnerShape();
+		}
+
+		if (shape->GetType() == JPH::EShapeType::Compound) {
+			body_shape_count = static_cast<const JPH::CompoundShape *>(shape)->GetNumSubShapes();
+		} else {
+			body_shape_count = 1;
+		}
+	}
+
+	virtual void AddHit(const Hit &p_hit) override {
+		if ((int)hits.size() >= max_hits) {
+			return;
+		}
+
+		// The user data of a sub-shape identifies the shape it belongs to.
+		const JPH::uint64 shape_hit = body_shape->GetSubShapeUserData(p_hit.mSubShapeID2);
+
+		for (const JPH::uint64 other_shape_hit : body_shapes_hit) {
+			if (other_shape_hit == shape_hit) {
+				return;
+			}
+		}
+
+		hits.push_back(p_hit);
+		body_shapes_hit.push_back(shape_hit);
+
+		// Once every shape of this body is collected, skip what remains of it.
+		if ((int)hits.size() == max_hits || (int)body_shapes_hit.size() == body_shape_count) {
+			TBase::ForceEarlyOut();
+		}
+	}
+
+	virtual void OnBodyEnd() override {
+		// Carry on with the next body, unless we're done.
+		if ((int)hits.size() < max_hits) {
+			TBase::ResetEarlyOutFraction();
 		}
 	}
 };

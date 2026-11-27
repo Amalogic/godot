@@ -578,8 +578,14 @@ int JoltPhysicsDirectSpaceState3D::intersect_shape(const ShapeParameters &p_para
 	settings.mMaxSeparationDistance = (float)p_parameters.margin;
 
 	const JoltQueryFilter3D query_filter(*this, p_parameters.collision_mask, p_parameters.collide_with_bodies, p_parameters.collide_with_areas, p_parameters.exclude);
-	JoltQueryCollectorAnyMulti<JPH::CollideShapeCollector, 32> collector(p_result_max);
-	_collide_shape_queries(jolt_shape, to_jolt(scale), to_jolt_r(transform_com), settings, to_jolt_r(transform_com.origin), collector, query_filter, query_filter, query_filter);
+	JoltQueryCollectorAnyMultiPerShape<JPH::CollideShapeCollector, 32> collector(p_result_max);
+
+	// This deliberately calls `CollideShape` directly instead of `_collide_shape_queries`, which would
+	// use enhanced internal edge removal when that setting is enabled. Edge removal only discards hits,
+	// so it can't improve an overlap test, and it would break this one: it can discard a shape that
+	// shares an edge with another shape of the same body, and with this collector it ends the query
+	// after the first body.
+	space->get_narrow_phase_query().CollideShape(jolt_shape, to_jolt(scale), to_jolt_r(transform_com), settings, to_jolt_r(transform_com.origin), collector, query_filter, query_filter, query_filter);
 
 	const int hit_count = collector.get_hit_count();
 
